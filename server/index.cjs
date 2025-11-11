@@ -1908,6 +1908,10 @@ app.get("/api/sync", async (req, res) => {
 // log registered routes
 logRoutes(app);
 
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`Server running at http://localhost:${port}`);
+  });
+}
+
+module.exports = app;
