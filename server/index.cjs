@@ -5,7 +5,6 @@ const { google } = require("googleapis");
 const path = require("path");
 
 const app = express();
-const port = process.env.PORT || 8787;
 const distDir = path.resolve(__dirname, "..", "dist");
 const indexHtmlPath = path.join(distDir, "index.html");
 
@@ -1911,28 +1910,20 @@ app.get("/api/sync", async (req, res) => {
 // Serve Vite build assets
 app.use(express.static(distDir));
 
-// SPA fallback for non-API routes
-app.get("*", (req, res, next) => {
-  const requestPath = req.path || "";
-  const isApiRoute = requestPath.startsWith("/api");
-  const isHealthRoute = requestPath === "/_health";
-  if (isApiRoute || isHealthRoute || req.method !== "GET") {
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/") || req.path === "/_health") {
     return next();
   }
-
-  return res.sendFile(indexHtmlPath, (err) => {
-    if (err) {
-      next(err);
-    }
-  });
+  res.sendFile(path.join(distDir, "index.html"));
 });
 
 // log registered routes
 logRoutes(app);
 
 if (require.main === module) {
+  const port = process.env.PORT || 8787;
   app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
+    console.log(`Server listening on port ${port}`);
   });
 }
 
