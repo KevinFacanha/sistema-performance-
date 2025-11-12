@@ -2,9 +2,12 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { google } = require("googleapis");
+const path = require("path");
 
 const app = express();
 const port = process.env.PORT || 8787;
+const distDir = path.resolve(__dirname, "..", "dist");
+const indexHtmlPath = path.join(distDir, "index.html");
 
 app.use(cors());
 app.use(express.json());
@@ -1309,11 +1312,11 @@ function logRoutes(appInstance) {
 
   stack.forEach((layer) => {
     if (!layer.route) return;
-    const path = layer.route.path;
+    const routePath = layer.route.path;
     const methods = Object.keys(layer.route.methods || {});
-    if (!path || !methods.length) return;
+    if (!routePath || !methods.length) return;
     methods.forEach((method) => {
-      console.log(`${method.toUpperCase()} ${path}`);
+      console.log(`${method.toUpperCase()} ${routePath}`);
     });
   });
 }
@@ -1905,10 +1908,29 @@ app.get("/api/sync", async (req, res) => {
   }
 });
 
+// Serve Vite build assets
+app.use(express.static(distDir));
+
+// SPA fallback for non-API routes
+app.get("*", (req, res, next) => {
+  const requestPath = req.path || "";
+  const isApiRoute = requestPath.startsWith("/api");
+  const isHealthRoute = requestPath === "/_health";
+  if (isApiRoute || isHealthRoute || req.method !== "GET") {
+    return next();
+  }
+
+  return res.sendFile(indexHtmlPath, (err) => {
+    if (err) {
+      next(err);
+    }
+  });
+});
+
 // log registered routes
 logRoutes(app);
 
-if (!process.env.VERCEL) {
+if (require.main === module) {
   app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
   });
