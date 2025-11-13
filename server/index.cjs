@@ -134,11 +134,7 @@ const SHEET_CACHE_TTL = 60 * 1000; // 1 minute cache to avoid excessive Google S
 const tabDataCache = new Map();
 const sheetTitleCache = new Map();
 const veiaDataCache = new Map();
-const curvaABCCache = {
-  rows: null,
-  expiresAt: 0,
-  promise: null,
-};
+const curvaABCCache = new Map();
 
 const CURVA_ABC_HEADERS = {
   codigoAnuncio: 'CODIGO ANUNCIO',
@@ -164,6 +160,64 @@ const VEIA_EXPECTED_HEADERS = {
   custoDevC1: 'Custo Devolução C1 (R$)',
   custoDevC2: 'Custo Devolução C2 (R$)',
 };
+
+const VEIA_DEFAULT_TAB = 'Consolidado';
+
+function resolveVeiaTabName(overrideName = null) {
+  if (overrideName && typeof overrideName === 'string') {
+    return overrideName;
+  }
+  try {
+    const configured = getAccountTabName('3');
+    if (configured) {
+      const normalizedConfigured = normalizeSheetName(configured);
+      const normalizedDefault = normalizeSheetName(VEIA_DEFAULT_TAB);
+      if (normalizedConfigured === normalizedDefault) {
+        return configured;
+      }
+    }
+  } catch {
+    // ignore tab resolution errors and fall back to default
+  }
+  return VEIA_DEFAULT_TAB;
+}
+
+function formatVeiaPeriodLabel(value = '') {
+  if (!value || typeof value !== 'string') return '';
+  const [year, month] = value.split('-');
+  if (!year || !month) {
+    return value;
+  }
+  return `${month.padStart(2, '0')}/${year}`;
+}
+
+function buildVeiaPeriodOptions(rows = []) {
+  const unique = new Set();
+  rows.forEach((row) => {
+    if (row?.mesAno) {
+      unique.add(row.mesAno);
+    }
+  });
+  return Array.from(unique)
+    .filter(Boolean)
+    .sort((a, b) => b.localeCompare(a))
+    .map((value) => ({
+      value,
+      label: formatVeiaPeriodLabel(value),
+    }));
+}
+
+async function fetchVeiaConsolidado({ sheetId, force = false } = {}) {
+  const targetSheetId = sheetId || resolveSheetId('3');
+  if (!targetSheetId) {
+    const error = new Error('Planilha VEIA não configurada. Adicione a terceira entrada em GOOGLE_SHEETS_ID.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const tabName = resolveVeiaTabName();
+  const data = await loadVeiaSheetData(targetSheetId, force, tabName);
+  return { ...data, sheetId: targetSheetId, tabName };
+}
 
 function getGoogleSheetsSettings() {
   const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
@@ -325,6 +379,17 @@ function getComparativoFilterCacheEntry(cacheKey) {
     });
   }
   return comparativoFilterCache.get(cacheKey);
+}
+
+function getCurvaAbcCacheEntry(cacheKey) {
+  if (!curvaABCCache.has(cacheKey)) {
+    curvaABCCache.set(cacheKey, {
+      rows: null,
+      expiresAt: 0,
+      promise: null,
+    });
+  }
+  return curvaABCCache.get(cacheKey);
 }
 
 function normalizeVeiaHeader(value = "") {
@@ -778,7 +843,7 @@ function buildMonthlyFatVendas(rows = []) {
   return monthlyMap;
 }
 
-async function loadVeiaSheetData(sheetId, force = false) {
+async function loadVeiaSheetData(sheetId, force = false, tabNameOverride = null) {
   const cacheKey = `${sheetId}:veia`;
   const cacheEntry = getVeiaCacheEntry(cacheKey);
   const now = Date.now();
@@ -796,12 +861,7 @@ async function loadVeiaSheetData(sheetId, force = false) {
   }
 
   const loader = (async () => {
-    let requestedTab;
-    try {
-      requestedTab = getAccountTabName('3') || 'Consolidado';
-    } catch {
-      requestedTab = 'Consolidado';
-    }
+    const requestedTab = resolveVeiaTabName(tabNameOverride);
     const realTitle = await resolveSheetTitle(sheetId, requestedTab);
     if (!realTitle) {
       const error = new Error('Aba "Consolidado" não encontrada para a conta 3.');
@@ -900,6 +960,7 @@ function normalizeVeiaText(value) {
 function sanitizeVeiaFilters(query = {}) {
   const rawDe = typeof query.de === 'string' ? query.de.trim() : query.de;
   const rawAte = typeof query.ate === 'string' ? query.ate.trim() : query.ate;
+  const rawPeriodo = typeof query.periodo === 'string' ? query.periodo.trim() : query.periodo;
 
   const de = rawDe ? normalizeVeiaMonthFilter(rawDe) : null;
   if (rawDe && !de) {
@@ -911,22 +972,31 @@ function sanitizeVeiaFilters(query = {}) {
     throw createParamError('Parâmetro "ate" inválido (use YYYY-MM ou MM/YYYY)');
   }
 
+  const periodo = rawPeriodo ? normalizeVeiaMonthFilter(rawPeriodo) : null;
+  if (rawPeriodo && !periodo) {
+    throw createParamError('Parâmetro "periodo" inválido (use YYYY-MM ou MM/YYYY)');
+  }
+
   return {
     de,
     ate,
     modalidade: normalizeVeiaText(query.modalidade),
     status: normalizeVeiaText(query.status),
+    periodo,
   };
 }
 
 function filterVeiaRows(rows = [], filters = {}) {
-  const { de, ate, modalidade, status } = filters || {};
+  const { de, ate, modalidade, status, periodo } = filters || {};
   return rows.filter((row) => {
     const monthKey = row.mesAno || null;
     if (de && (!monthKey || monthKey < de)) {
       return false;
     }
     if (ate && (!monthKey || monthKey > ate)) {
+      return false;
+    }
+    if (periodo && (!monthKey || monthKey !== periodo)) {
       return false;
     }
 
@@ -1151,13 +1221,40 @@ function roundTwo(value) {
   return Number(Number(value || 0).toFixed(2));
 }
 
-function getCurvaABCSettings() {
-  const sheetId = SHEETS_BY_ACCOUNT[3];
-  if (!sheetId) {
-    throw new Error('Planilha Curva ABC não configurada. Adicione a quarta entrada em GOOGLE_SHEETS_ID.');
+const CURVA_ABC_ACCOUNT_TABS = {
+  '2': {
+    sheetId: '1AWHUVu3I-chCp-kJjhrRLtXLNq49mEvFOqMSCpDwl5Y',
+    tabTitle: 'Curva ABC Conta 2',
+  },
+};
+
+const CURVA_ABC_VALID_CONTAS = new Set(['1', '2']);
+
+function parseCurvaAbcContaParam(contaParam) {
+  const raw = Array.isArray(contaParam) ? contaParam[0] : contaParam;
+  const value = raw ? String(raw).trim() : '1';
+  if (!CURVA_ABC_VALID_CONTAS.has(value)) {
+    throw createParamError('Parâmetro "conta" inválido para Curva ABC (use 1 ou 2)');
   }
-  const tabName = getTabNameByIndex(3);
-  return { sheetId, tabName };
+  return value;
+}
+
+function resolveCurvaAbcSheetId(contaParam = '1') {
+  const conta = parseCurvaAbcContaParam(contaParam);
+  if (conta === '1') {
+    const sheetId = SHEETS_BY_ACCOUNT[3];
+    if (!sheetId) {
+      throw new Error('Planilha Curva ABC não configurada. Adicione a quarta entrada em GOOGLE_SHEETS_ID.');
+    }
+    const tabTitle = getTabNameByIndex(3);
+    return { sheetId, tabTitle };
+  }
+
+  const preset = CURVA_ABC_ACCOUNT_TABS[conta];
+  if (!preset) {
+    throw createParamError('Conta Curva ABC não configurada');
+  }
+  return { ...preset };
 }
 
 function normalizeCurvaPeriodo(value) {
@@ -1179,18 +1276,22 @@ function normalizeCurvaPeriodo(value) {
   return null;
 }
 
-async function getCurvaABCData(force = false) {
+async function getCurvaABCData(contaParam = '1', force = false) {
+  const conta = parseCurvaAbcContaParam(contaParam);
+  const cacheKey = `curvaabc:${conta}`;
+  const cacheEntry = getCurvaAbcCacheEntry(cacheKey);
   const now = Date.now();
-  if (!force && curvaABCCache.rows && curvaABCCache.expiresAt > now) {
-    return curvaABCCache.rows;
+
+  if (!force && cacheEntry.rows && cacheEntry.expiresAt > now) {
+    return cacheEntry.rows;
   }
-  if (!force && curvaABCCache.promise) {
-    return curvaABCCache.promise;
+  if (!force && cacheEntry.promise) {
+    return cacheEntry.promise;
   }
 
   const loader = (async () => {
-    const { sheetId, tabName } = getCurvaABCSettings();
-    const realTitle = await resolveSheetTitle(sheetId, tabName);
+    const { sheetId, tabTitle } = resolveCurvaAbcSheetId(conta);
+    const realTitle = await resolveSheetTitle(sheetId, tabTitle);
     const safeTitle = quoteSheetTitle(realTitle);
     const range = `${safeTitle}!A1:Z10000`;
     const sheet = await readRange(sheetId, range);
@@ -1232,17 +1333,17 @@ async function getCurvaABCData(force = false) {
     return loader;
   }
 
-  curvaABCCache.promise = loader;
+  cacheEntry.promise = loader;
   try {
     const rows = await loader;
-    curvaABCCache.rows = rows;
-    curvaABCCache.expiresAt = Date.now() + SHEET_CACHE_TTL;
-    curvaABCCache.promise = null;
+    cacheEntry.rows = rows;
+    cacheEntry.expiresAt = Date.now() + SHEET_CACHE_TTL;
+    cacheEntry.promise = null;
     return rows;
   } catch (error) {
-    curvaABCCache.promise = null;
-    curvaABCCache.rows = null;
-    curvaABCCache.expiresAt = 0;
+    cacheEntry.promise = null;
+    cacheEntry.rows = null;
+    cacheEntry.expiresAt = 0;
     throw error;
   }
 }
@@ -1370,7 +1471,8 @@ app.get("/api/debug/firstrow", async (req, res) => {
 
   try {
     if (isVeiaAccount(contaParam)) {
-      const { rows, headersDetected } = await loadVeiaSheetData(sheetId);
+      const tabName = resolveVeiaTabName();
+      const { rows, headersDetected } = await loadVeiaSheetData(sheetId, false, tabName);
       return res.json({
         ok: true,
         conta: contaParam,
@@ -1410,7 +1512,8 @@ app.get("/api/debug/sample", async (req, res) => {
 
   try {
     if (isVeiaAccount(contaParam)) {
-      const { rows } = await loadVeiaSheetData(sheetId);
+      const tabName = resolveVeiaTabName();
+      const { rows } = await loadVeiaSheetData(sheetId, false, tabName);
       return res.json({ ok: true, conta: contaParam, sheetId, rows: rows.slice(0, 3) });
     }
 
@@ -1761,7 +1864,8 @@ app.get("/api/comparativo/mensal", async (req, res) => {
 
 app.get("/api/curvaabc", async (req, res) => {
   try {
-    const rows = await getCurvaABCData();
+    const contaParam = parseCurvaAbcContaParam(req?.query?.conta);
+    const rows = await getCurvaABCData(contaParam);
     res.json({ ok: true, rows });
   } catch (error) {
     const status = error.statusCode || 500;
@@ -1778,7 +1882,8 @@ app.get("/api/curvaabc", async (req, res) => {
 
 app.get("/api/curvaabc/check", async (req, res) => {
   try {
-    const rows = await getCurvaABCData();
+    const contaParam = parseCurvaAbcContaParam(req?.query?.conta);
+    const rows = await getCurvaABCData(contaParam);
     const mudancas = buildCurvaABCMudancas(rows);
     res.json({ ok: true, mudancas });
   } catch (error) {
@@ -1816,7 +1921,7 @@ app.get("/api/veia/summary", async (req, res) => {
   }
 
   try {
-    const { rows } = await loadVeiaSheetData(sheetId);
+    const { rows } = await fetchVeiaConsolidado({ sheetId });
     const filters = sanitizeVeiaFilters(req.query || {});
     const filtered = filterVeiaRows(rows, filters);
     const resumo = buildVeiaSummary(filtered);
@@ -1854,11 +1959,11 @@ app.get("/api/veia/mensal", async (req, res) => {
         ok: false,
         conta: contaParam,
         error: 'Conta inválida ou GOOGLE_SHEETS_ID não configurado.',
-      });
+    });
   }
 
   try {
-    const { rows } = await loadVeiaSheetData(sheetId);
+    const { rows } = await fetchVeiaConsolidado({ sheetId });
     const filters = sanitizeVeiaFilters(req.query || {});
     const filtered = filterVeiaRows(rows, filters);
     const { meses, modalidades, status: statusLista } = buildVeiaMonthly(filtered);
@@ -1867,6 +1972,46 @@ app.get("/api/veia/mensal", async (req, res) => {
     const status = error.statusCode || 500;
     if (status >= 500) {
       console.error('Error building VEIA monthly data:', error);
+    }
+    res.status(status).json({
+      ok: false,
+      conta: contaParam,
+      sheetId,
+      error: error.message || 'Internal server error',
+      code: error.code,
+    });
+  }
+});
+
+app.get("/api/veia/consolidado", async (req, res) => {
+  const contaParam = getContaParam(req);
+  if (!isVeiaAccount(contaParam)) {
+    return res.status(400).json({
+      ok: false,
+      conta: contaParam,
+      error: 'Rota VEIA só para conta 3',
+    });
+  }
+
+  const sheetId = resolveSheetId(req?.query?.conta);
+  if (!sheetId) {
+    return res
+      .status(400)
+      .json({
+        ok: false,
+        conta: contaParam,
+        error: 'Conta inválida ou GOOGLE_SHEETS_ID não configurado.',
+      });
+  }
+
+  try {
+    const { rows, tabName } = await fetchVeiaConsolidado({ sheetId });
+    const periodos = buildVeiaPeriodOptions(rows);
+    res.json({ ok: true, conta: contaParam, sheetId, tabName, periodos, total: rows.length, rows });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    if (status >= 500) {
+      console.error('Error loading VEIA consolidado data:', error);
     }
     res.status(status).json({
       ok: false,

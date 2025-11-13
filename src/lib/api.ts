@@ -13,6 +13,7 @@ export interface VeiaFilters extends Record<string, unknown> {
   ate?: string;
   modalidade?: string | null;
   status?: string | null;
+  periodo?: string | null;
 }
 
 export interface DashboardSummary {
@@ -85,6 +86,11 @@ export interface VeiaMensalResponse {
   meses: VeiaMonthlyPoint[];
   modalidades: string[];
   status: string[];
+}
+
+export interface VeiaPeriodOption {
+  value: string;
+  label: string;
 }
 
 export interface ComparativoFilters extends Record<string, unknown> {
@@ -277,6 +283,35 @@ function normalizeVeiaMonthlyRow(row: any): VeiaMonthlyPoint {
   };
 }
 
+function formatVeiaPeriodLabel(value: string): string {
+  if (!value) return '';
+  const [year, month] = value.split('-');
+  if (!year || !month) {
+    return value;
+  }
+  return `${month.padStart(2, '0')}/${year}`;
+}
+
+function normalizeVeiaPeriodOption(entry: any): VeiaPeriodOption | null {
+  if (!entry && entry !== 0) {
+    return null;
+  }
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim();
+    if (!trimmed) return null;
+    return { value: trimmed, label: formatVeiaPeriodLabel(trimmed) };
+  }
+  const value = entry?.value ?? entry?.mesAno ?? entry?.mes ?? null;
+  if (!value) return null;
+  const normalizedValue = String(value).trim();
+  if (!normalizedValue) return null;
+  const labelSource = entry?.label ? String(entry.label).trim() : null;
+  return {
+    value: normalizedValue,
+    label: labelSource && labelSource.length ? labelSource : formatVeiaPeriodLabel(normalizedValue),
+  };
+}
+
 function normalizeComparativoMensalRow(row: any): ComparativoMensalItem {
   const mesAno = row?.mesAno || row?.mesISO || row?.mes || '';
   if (!mesAno) {
@@ -382,6 +417,14 @@ export async function getVeiaMensal(filters: VeiaFilters = {}): Promise<VeiaMens
   return { meses, modalidades, status: statusLista };
 }
 
+export async function getVeiaPeriodos(): Promise<VeiaPeriodOption[]> {
+  const data: any = await fetchJson('/api/veia/consolidado', { conta: '3' });
+  const rawPeriodos = Array.isArray(data?.periodos) ? data.periodos : [];
+  return rawPeriodos
+    .map(normalizeVeiaPeriodOption)
+    .filter((option): option is VeiaPeriodOption => Boolean(option && option.value));
+}
+
 export async function getComparativoSummary(
   filters: ComparativoFilters
 ): Promise<ComparativoSummaryResponse> {
@@ -404,8 +447,9 @@ export async function getComparativoMensal(
   return rawMeses.map(normalizeComparativoMensalRow);
 }
 
-export async function getCurvaAbcMudancas(): Promise<CurvaAbcMudanca[]> {
-  const data: any = await fetchJson('/api/curvaabc/check');
+export async function getCurvaAbcMudancas(conta = 1): Promise<CurvaAbcMudanca[]> {
+  const normalizedConta = Number.isFinite(conta) ? String(Math.round(conta)) : '1';
+  const data: any = await fetchJson('/api/curvaabc/check', { conta: normalizedConta });
   const raw = Array.isArray(data?.mudancas) ? data.mudancas : [];
   return raw.map(normalizeCurvaAbcMudanca);
 }

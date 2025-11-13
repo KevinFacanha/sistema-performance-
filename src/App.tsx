@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import {
@@ -187,26 +187,32 @@ function App({ onLogout }: AppProps = {}) {
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [comparePdfFileName, setComparePdfFileName] = useState('Comparativo_1x2_todos.pdf');
+  const [curvaAbcConta, setCurvaAbcConta] = useState<'1' | '2'>('1');
   const [curvaAbcLoading, setCurvaAbcLoading] = useState(false);
   const [curvaAbcChanges, setCurvaAbcChanges] = useState<CurvaAbcMudanca[]>([]);
   const [curvaAbcError, setCurvaAbcError] = useState<string | null>(null);
   const [curvaAbcExpanded, setCurvaAbcExpanded] = useState(false);
   const [curvaAbcUpdatedAt, setCurvaAbcUpdatedAt] = useState<Date | null>(null);
+  const [curvaAbcDismissedMap, setCurvaAbcDismissedMap] = useState<Record<string, boolean>>({});
 
-  const loadCurvaAbcChanges = useCallback(async () => {
-    setCurvaAbcLoading(true);
-    setCurvaAbcError(null);
-    try {
-      const mudancas = await getCurvaAbcMudancas();
-      setCurvaAbcChanges(mudancas);
-      setCurvaAbcUpdatedAt(new Date());
-    } catch (err) {
-      console.error('Erro ao verificar Curva ABC:', err);
-      setCurvaAbcError(err instanceof Error ? err.message : 'Falha ao verificar Curva ABC');
-    } finally {
-      setCurvaAbcLoading(false);
-    }
-  }, []);
+  const loadCurvaAbcChanges = useCallback(
+    async (contaOverride?: '1' | '2') => {
+      const targetConta = contaOverride ?? curvaAbcConta;
+      setCurvaAbcLoading(true);
+      setCurvaAbcError(null);
+      try {
+        const mudancas = await getCurvaAbcMudancas(Number(targetConta));
+        setCurvaAbcChanges(mudancas);
+        setCurvaAbcUpdatedAt(new Date());
+      } catch (err) {
+        console.error('Erro ao verificar Curva ABC:', err);
+        setCurvaAbcError(err instanceof Error ? err.message : 'Falha ao verificar Curva ABC');
+      } finally {
+        setCurvaAbcLoading(false);
+      }
+    },
+    [curvaAbcConta]
+  );
 
   const loadData = useCallback(
     async (requestedAccount: string) => {
@@ -242,6 +248,9 @@ function App({ onLogout }: AppProps = {}) {
         } else {
           setCurvaAbcChanges([]);
           setCurvaAbcUpdatedAt(null);
+          setCurvaAbcExpanded(false);
+          setCurvaAbcLoading(false);
+          setCurvaAbcError(null);
         }
         setLastUpdate(new Date());
       } catch (err) {
@@ -432,6 +441,7 @@ function App({ onLogout }: AppProps = {}) {
   const refreshSpinning = isDashboardView ? loading : !canRefreshCompare && view === 'compare';
   const curvaAbcHasChanges = curvaAbcChanges.length > 0;
   const curvaAbcUpdatedLabel = curvaAbcUpdatedAt ? curvaAbcUpdatedAt.toLocaleString('pt-BR') : null;
+  const curvaAbcDismissed = Boolean(curvaAbcDismissedMap[curvaAbcConta]);
 
   const handleReset = () => {
     setStart(undefined);
@@ -465,6 +475,19 @@ function App({ onLogout }: AppProps = {}) {
     setSelectedMarketplace(value);
     setMarketplace(value ? value.toLowerCase() : undefined);
     setPage(1);
+  };
+
+  const handleCurvaAbcAcknowledge = () => {
+    setCurvaAbcDismissedMap((prev) => ({ ...prev, [curvaAbcConta]: true }));
+    setCurvaAbcExpanded(false);
+  };
+
+  const handleCurvaAbcContaChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const value = event.target.value === '2' ? '2' : '1';
+    setCurvaAbcConta(value);
+    setCurvaAbcExpanded(false);
+    setCurvaAbcUpdatedAt(null);
+    loadCurvaAbcChanges(value);
   };
 
   const handleAccountChange = (value: string) => {
@@ -781,9 +804,23 @@ function App({ onLogout }: AppProps = {}) {
                   />
                 </div>
 
-                {isDashboardView && account !== '3' && (
+                {isDashboardView && account !== '3' && !curvaAbcDismissed && (
                   <div className="grid grid-cols-1">
                     <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+                      <div className="mb-4 flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500 sm:flex-row sm:items-center sm:justify-end">
+                        <label htmlFor="curva-abc-conta" className="text-slate-500">
+                          Conta
+                        </label>
+                        <select
+                          id="curva-abc-conta"
+                          value={curvaAbcConta}
+                          onChange={handleCurvaAbcContaChange}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium capitalize text-slate-700 shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 sm:w-auto"
+                        >
+                          <option value="1">Conta 1</option>
+                          <option value="2">Conta 2</option>
+                        </select>
+                      </div>
                       {curvaAbcLoading ? (
                         <div className="space-y-4">
                           <div className="h-4 w-1/3 rounded-full bg-slate-100 animate-pulse" />
@@ -815,14 +852,25 @@ function App({ onLogout }: AppProps = {}) {
                                 </p>
                               </div>
                             </div>
-                            <button
-                              type="button"
-                              aria-expanded={curvaAbcExpanded}
-                              onClick={() => setCurvaAbcExpanded((prev) => !prev)}
-                              className="inline-flex items-center justify-center rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
-                            >
-                              {curvaAbcExpanded ? 'Ocultar Detalhes' : 'Ver Detalhes'}
-                            </button>
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                              {curvaAbcHasChanges && (
+                                <button
+                                  type="button"
+                                  onClick={handleCurvaAbcAcknowledge}
+                                  className="inline-flex items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+                                >
+                                  Estou ciente
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                aria-expanded={curvaAbcExpanded}
+                                onClick={() => setCurvaAbcExpanded((prev) => !prev)}
+                                className="inline-flex items-center justify-center rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+                              >
+                                {curvaAbcExpanded ? 'Ocultar Detalhes' : 'Ver Detalhes'}
+                              </button>
+                            </div>
                           </div>
                           {curvaAbcExpanded && (
                             <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-100">

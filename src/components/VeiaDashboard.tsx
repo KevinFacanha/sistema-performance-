@@ -9,7 +9,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { getVeiaMensal, getVeiaSummary, VeiaMonthlyPoint, VeiaSummary } from '../lib/api';
+import {
+  getVeiaMensal,
+  getVeiaPeriodos,
+  getVeiaSummary,
+  VeiaMonthlyPoint,
+  VeiaPeriodOption,
+  VeiaSummary,
+} from '../lib/api';
 import { currencyBRL, formatDateBR } from '../lib/format';
 
 const initialVeiaSummary: VeiaSummary = {
@@ -59,8 +66,10 @@ export function VeiaDashboard() {
   const [mensal, setMensal] = useState<VeiaMonthlyPoint[]>([]);
   const [modalidade, setModalidade] = useState<string>('');
   const [status, setStatus] = useState<string>('');
+  const [periodo, setPeriodo] = useState<string>('');
   const [modalidadeOptions, setModalidadeOptions] = useState<string[]>([]);
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
+  const [periodoOptions, setPeriodoOptions] = useState<VeiaPeriodOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,6 +80,7 @@ export function VeiaDashboard() {
       const filters = {
         modalidade: modalidade || undefined,
         status: status || undefined,
+        periodo: periodo || undefined,
       };
       const [summaryData, mensalResponse] = await Promise.all([
         getVeiaSummary(filters),
@@ -86,20 +96,44 @@ export function VeiaDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [modalidade, status]);
+  }, [modalidade, status, periodo]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const options = await getVeiaPeriodos();
+        if (cancelled) return;
+        setPeriodoOptions(options);
+      } catch (err) {
+        console.error('Erro ao carregar períodos VEIA:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!periodo) return;
+    const exists = periodoOptions.some((option) => option.value === periodo);
+    if (!exists) {
+      setPeriodo('');
+    }
+  }, [periodo, periodoOptions]);
+
   const cards = useMemo(() => {
-    const reembolsoTotal = summary.reembolsoC1Total + summary.reembolsoC2Total;
-    const custoDevTotal = summary.custoDevC1Total + summary.custoDevC2Total;
     return [
       { label: 'Vendas Brutas (1)', value: summary.vendasBrutas1Total },
       { label: 'Vendas Brutas (2)', value: summary.vendasBrutas2Total },
-      { label: 'Reembolsos (C1 + C2)', value: reembolsoTotal },
-      { label: 'Custos Devolução (C1 + C2)', value: custoDevTotal },
+      { label: 'Reembolsos C1', value: summary.reembolsoC1Total },
+      { label: 'Reembolsos C2', value: summary.reembolsoC2Total },
+      { label: 'Custos Devolução C1', value: summary.custoDevC1Total },
+      { label: 'Custos Devolução C2', value: summary.custoDevC2Total },
     ];
   }, [summary]);
 
@@ -148,6 +182,21 @@ export function VeiaDashboard() {
             {statusOptions.map((option) => (
               <option key={option} value={option}>
                 {option}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-1 min-w-[160px] flex-col">
+          <label className="text-sm font-semibold text-gray-700">Período (Mês/Ano)</label>
+          <select
+            className="mt-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+            value={periodo}
+            onChange={(event) => setPeriodo(event.target.value)}
+          >
+            <option value="">Todos</option>
+            {periodoOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
               </option>
             ))}
           </select>
