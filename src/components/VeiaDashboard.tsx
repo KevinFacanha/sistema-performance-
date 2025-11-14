@@ -61,6 +61,18 @@ const tooltipContent = ({ active, payload, label }: any) => {
   );
 };
 
+function formatCardValue(value: number, hideCurrencySymbol?: boolean) {
+  const formatted = currencyBRL(value);
+  if (!hideCurrencySymbol) return formatted;
+  return formatted.replace(/^R\$\s*/, '').trim();
+}
+
+type SummaryCard = {
+  label: string;
+  value: number;
+  hideCurrencySymbol?: boolean;
+};
+
 export function VeiaDashboard() {
   const [summary, setSummary] = useState<VeiaSummary>(initialVeiaSummary);
   const [mensal, setMensal] = useState<VeiaMonthlyPoint[]>([]);
@@ -126,10 +138,10 @@ export function VeiaDashboard() {
     }
   }, [periodo, periodoOptions]);
 
-  const cards = useMemo(() => {
+  const cards: SummaryCard[] = useMemo(() => {
     return [
-      { label: 'Vendas Brutas (1)', value: summary.vendasBrutas1Total },
-      { label: 'Vendas Brutas (2)', value: summary.vendasBrutas2Total },
+      { label: 'Vendas Brutas (1)', value: summary.vendasBrutas1Total, hideCurrencySymbol: true },
+      { label: 'Vendas Brutas (2)', value: summary.vendasBrutas2Total, hideCurrencySymbol: true },
       { label: 'Reembolsos C1', value: summary.reembolsoC1Total },
       { label: 'Reembolsos C2', value: summary.reembolsoC2Total },
       { label: 'Custos Devolução C1', value: summary.custoDevC1Total },
@@ -209,7 +221,9 @@ export function VeiaDashboard() {
           : cards.map((card) => (
               <div key={card.label} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <p className="text-sm text-gray-500">{card.label}</p>
-                <p className="mt-2 text-xl font-semibold text-gray-900">{currencyBRL(card.value)}</p>
+                <p className="mt-2 text-xl font-semibold text-gray-900">
+                  {formatCardValue(card.value, card.hideCurrencySymbol)}
+                </p>
               </div>
             ))}
       </div>
