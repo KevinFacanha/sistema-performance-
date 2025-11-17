@@ -60,6 +60,47 @@ const ACCOUNT_OPTIONS = [
   { value: '3', label: 'CONTA 3 (VEIA)' },
 ];
 
+type CurvaAbcFilter = 'all' | 'up' | 'down';
+type CurvaAbcTrend = 'up' | 'down' | 'equal';
+
+const CURVA_ABC_VALUES: Record<string, number> = {
+  A: 3,
+  B: 2,
+  C: 1,
+};
+
+const CURVA_ABC_FILTER_OPTIONS: { value: CurvaAbcFilter; label: string }[] = [
+  { value: 'all', label: 'Todas' },
+  { value: 'up', label: 'Melhoraram' },
+  { value: 'down', label: 'Pioraram' },
+];
+
+const getCurvaAbcValue = (value: string | null): number | null => {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+  return CURVA_ABC_VALUES[normalized] ?? null;
+};
+
+const getCurvaAbcTrend = (anterior: string | null, atual: string | null): CurvaAbcTrend => {
+  const previous = getCurvaAbcValue(anterior);
+  const current = getCurvaAbcValue(atual);
+  if (previous === null || current === null) {
+    return 'equal';
+  }
+  if (current > previous) {
+    return 'up';
+  }
+  if (current < previous) {
+    return 'down';
+  }
+  return 'equal';
+};
+
 function aggregateByDate(rows: DashboardRow[]): DashboardRow[] {
   const groups = new Map<string, DashboardRow[]>();
   rows.forEach((row) => {
@@ -194,6 +235,7 @@ function App({ onLogout }: AppProps = {}) {
   const [curvaAbcExpanded, setCurvaAbcExpanded] = useState(false);
   const [curvaAbcUpdatedAt, setCurvaAbcUpdatedAt] = useState<Date | null>(null);
   const [curvaAbcDismissedMap, setCurvaAbcDismissedMap] = useState<Record<string, boolean>>({});
+  const [curvaAbcFilter, setCurvaAbcFilter] = useState<CurvaAbcFilter>('all');
 
   const loadCurvaAbcChanges = useCallback(
     async (contaOverride?: '1' | '2') => {
@@ -442,6 +484,25 @@ function App({ onLogout }: AppProps = {}) {
   const curvaAbcHasChanges = curvaAbcChanges.length > 0;
   const curvaAbcUpdatedLabel = curvaAbcUpdatedAt ? curvaAbcUpdatedAt.toLocaleString('pt-BR') : null;
   const curvaAbcDismissed = Boolean(curvaAbcDismissedMap[curvaAbcConta]);
+  const filteredCurvaAbcChanges = useMemo(() => {
+    if (curvaAbcFilter === 'all') {
+      return curvaAbcChanges;
+    }
+    return curvaAbcChanges.filter((item) => {
+      const trend = getCurvaAbcTrend(item.anterior, item.atual);
+      return curvaAbcFilter === 'up' ? trend === 'up' : trend === 'down';
+    });
+  }, [curvaAbcChanges, curvaAbcFilter]);
+  const getCurvaAbcTextClass = (item: CurvaAbcMudanca) => {
+    const trend = getCurvaAbcTrend(item.anterior, item.atual);
+    if (trend === 'up') {
+      return 'text-green-600';
+    }
+    if (trend === 'down') {
+      return 'text-red-600';
+    }
+    return 'text-emerald-700';
+  };
 
   const handleReset = () => {
     setStart(undefined);
@@ -873,29 +934,52 @@ function App({ onLogout }: AppProps = {}) {
                             </div>
                           </div>
                           {curvaAbcExpanded && (
-                            <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-100">
-                              <table className="min-w-full divide-y divide-slate-100 text-sm">
-                                <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                  <tr>
-                                    <th className="px-4 py-3 text-left">Código Anúncio</th>
-                                    <th className="px-4 py-3 text-left">Curva Anterior</th>
-                                    <th className="px-4 py-3 text-left">Curva Atual</th>
-                                    <th className="px-4 py-3 text-left">Período Atual</th>
-                                    <th className="px-4 py-3 text-left">Marketplace</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
-                                  {curvaAbcChanges.map((item) => (
-                                    <tr key={`${item.codigo}-${item.periodo_atual}-${item.atual}`}>
-                                      <td className="px-4 py-3 font-semibold text-slate-900">{item.codigo || '—'}</td>
-                                      <td className="px-4 py-3">{item.anterior || '—'}</td>
-                                      <td className="px-4 py-3 text-emerald-700 font-semibold">{item.atual || '—'}</td>
-                                      <td className="px-4 py-3">{item.periodo_atual || '—'}</td>
-                                      <td className="px-4 py-3">{item.marketplace || '—'}</td>
+                            <div className="mt-5">
+                              <div className="mb-4 flex flex-wrap items-center gap-2">
+                                {CURVA_ABC_FILTER_OPTIONS.map(({ value, label }) => {
+                                  const isActive = curvaAbcFilter === value;
+                                  return (
+                                    <button
+                                      key={value}
+                                      type="button"
+                                      onClick={() => setCurvaAbcFilter(value)}
+                                      className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
+                                        isActive
+                                          ? 'border-blue-600 bg-blue-50 text-blue-700'
+                                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      {label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                                <table className="min-w-full divide-y divide-slate-100 text-sm">
+                                  <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    <tr>
+                                      <th className="px-4 py-3 text-left">Código Anúncio</th>
+                                      <th className="px-4 py-3 text-left">Curva Anterior</th>
+                                      <th className="px-4 py-3 text-left">Curva Atual</th>
+                                      <th className="px-4 py-3 text-left">Período Atual</th>
+                                      <th className="px-4 py-3 text-left">Marketplace</th>
                                     </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
+                                    {filteredCurvaAbcChanges.map((item) => (
+                                      <tr key={`${item.codigo}-${item.periodo_atual}-${item.atual}`}>
+                                        <td className="px-4 py-3 font-semibold text-slate-900">{item.codigo || '—'}</td>
+                                        <td className="px-4 py-3">{item.anterior || '—'}</td>
+                                        <td className={`px-4 py-3 font-semibold ${getCurvaAbcTextClass(item)}`}>
+                                          {item.atual || '—'}
+                                        </td>
+                                        <td className="px-4 py-3">{item.periodo_atual || '—'}</td>
+                                        <td className="px-4 py-3">{item.marketplace || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
                           )}
                         </>
