@@ -479,6 +479,15 @@ function parseVeiaRow(row = [], indices = {}) {
     return trimmed || null;
   };
 
+  const rawPctC1 = getValue('pctC1');
+  const rawPctC2 = getValue('pctC2');
+  const rawConta1 = getValue('conta1');
+  const rawConta2 = getValue('conta2');
+  const conta1Value = parseIntNullable(rawConta1);
+  const conta2Value = parseIntNullable(rawConta2);
+  const pctC1Value = parsePercentNullable(rawPctC1);
+  const pctC2Value = parsePercentNullable(rawPctC2);
+
   return {
     conta: '3',
     mesAno: mesISO,
@@ -486,10 +495,14 @@ function parseVeiaRow(row = [], indices = {}) {
     status: toNullableString(getValue('status')),
     vendasBrutas1: parseBRLNullable(getValue('vendasBrutas1')),
     vendasBrutas2: parseBRLNullable(getValue('vendasBrutas2')),
-    pctC1: parsePercentNullable(getValue('pctC1')),
-    conta1: parseIntNullable(getValue('conta1')),
-    pctC2: parsePercentNullable(getValue('pctC2')),
-    conta2: parseIntNullable(getValue('conta2')),
+    pctC1: pctC1Value,
+    conta1: conta1Value,
+    pctC2: pctC2Value,
+    conta2: conta2Value,
+    percentC1: toNullableString(rawPctC1),
+    percentC2: toNullableString(rawPctC2),
+    countC1: conta1Value,
+    countC2: conta2Value,
     reembolsoC1: parseBRLNullable(getValue('reembolsoC1')),
     reembolsoC2: parseBRLNullable(getValue('reembolsoC2')),
     custoDevC1: parseBRLNullable(getValue('custoDevC1')),
@@ -1079,10 +1092,14 @@ function buildVeiaMonthly(rows = []) {
         vendasBrutas2: 0,
         conta1: 0,
         conta2: 0,
+        countC1: 0,
+        countC2: 0,
         reembolsoC1: 0,
         reembolsoC2: 0,
         custoDevC1: 0,
         custoDevC2: 0,
+        percentC1: null,
+        percentC2: null,
       });
     }
     const bucket = monthlyMap.get(row.mesAno);
@@ -1090,10 +1107,24 @@ function buildVeiaMonthly(rows = []) {
     bucket.vendasBrutas2 += row.vendasBrutas2 ?? 0;
     bucket.conta1 += row.conta1 ?? 0;
     bucket.conta2 += row.conta2 ?? 0;
+    bucket.countC1 += row.countC1 ?? row.conta1 ?? 0;
+    bucket.countC2 += row.countC2 ?? row.conta2 ?? 0;
     bucket.reembolsoC1 += row.reembolsoC1 ?? 0;
     bucket.reembolsoC2 += row.reembolsoC2 ?? 0;
     bucket.custoDevC1 += row.custoDevC1 ?? 0;
     bucket.custoDevC2 += row.custoDevC2 ?? 0;
+    if (row.percentC1 !== undefined && row.percentC1 !== null) {
+      const pct1 = String(row.percentC1).trim();
+      if (pct1) {
+        bucket.percentC1 = pct1;
+      }
+    }
+    if (row.percentC2 !== undefined && row.percentC2 !== null) {
+      const pct2 = String(row.percentC2).trim();
+      if (pct2) {
+        bucket.percentC2 = pct2;
+      }
+    }
   });
 
   const meses = Array.from(monthlyMap.values())
@@ -1104,6 +1135,10 @@ function buildVeiaMonthly(rows = []) {
       vendasBrutas2: roundTwo(item.vendasBrutas2),
       conta1: roundTwo(item.conta1),
       conta2: roundTwo(item.conta2),
+      countC1: roundTwo(item.countC1),
+      countC2: roundTwo(item.countC2),
+      percentC1: item.percentC1,
+      percentC2: item.percentC2,
       reembolsoC1: roundTwo(item.reembolsoC1),
       reembolsoC2: roundTwo(item.reembolsoC2),
       custoDevC1: roundTwo(item.custoDevC1),

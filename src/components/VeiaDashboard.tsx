@@ -17,7 +17,7 @@ import {
   VeiaPeriodOption,
   VeiaSummary,
 } from '../lib/api';
-import { currencyBRL, formatDateBR } from '../lib/format';
+import { currencyBRL, formatDateBR, numBR } from '../lib/format';
 
 const initialVeiaSummary: VeiaSummary = {
   meses: 0,
@@ -71,6 +71,8 @@ type SummaryCard = {
   label: string;
   value: number;
   hideCurrencySymbol?: boolean;
+  formatter?: (value: number) => string;
+  description?: string | null;
 };
 
 export function VeiaDashboard() {
@@ -138,6 +140,31 @@ export function VeiaDashboard() {
     }
   }, [periodo, periodoOptions]);
 
+  const veiaCountMetrics = useMemo(() => {
+    let countC1 = 0;
+    let countC2 = 0;
+    let percentC1: string | null = null;
+    let percentC2: string | null = null;
+
+    mensal.forEach((item) => {
+      countC1 += item.countC1 ?? 0;
+      countC2 += item.countC2 ?? 0;
+      if (!percentC1 && item.percentC1) {
+        percentC1 = item.percentC1;
+      }
+      if (!percentC2 && item.percentC2) {
+        percentC2 = item.percentC2;
+      }
+    });
+
+    return {
+      countC1,
+      countC2,
+      percentC1,
+      percentC2,
+    };
+  }, [mensal]);
+
   const cards: SummaryCard[] = useMemo(() => {
     return [
       { label: 'Vendas Brutas (1)', value: summary.vendasBrutas1Total, hideCurrencySymbol: true },
@@ -146,8 +173,20 @@ export function VeiaDashboard() {
       { label: 'Reembolsos C2', value: summary.reembolsoC2Total },
       { label: 'Custos Devolução C1', value: summary.custoDevC1Total },
       { label: 'Custos Devolução C2', value: summary.custoDevC2Total },
+      {
+        label: 'Conta 1',
+        value: veiaCountMetrics.countC1,
+        formatter: (value) => numBR(value),
+        description: veiaCountMetrics.percentC1 ? `% C1: ${veiaCountMetrics.percentC1}` : '% C1: —',
+      },
+      {
+        label: 'Conta 2',
+        value: veiaCountMetrics.countC2,
+        formatter: (value) => numBR(value),
+        description: veiaCountMetrics.percentC2 ? `% C2: ${veiaCountMetrics.percentC2}` : '% C2: —',
+      },
     ];
-  }, [summary]);
+  }, [summary, veiaCountMetrics]);
 
   return (
     <div className="space-y-6">
@@ -222,8 +261,13 @@ export function VeiaDashboard() {
               <div key={card.label} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <p className="text-sm text-gray-500">{card.label}</p>
                 <p className="mt-2 text-xl font-semibold text-gray-900">
-                  {formatCardValue(card.value, card.hideCurrencySymbol)}
+                  {card.formatter
+                    ? card.formatter(card.value)
+                    : formatCardValue(card.value, card.hideCurrencySymbol)}
                 </p>
+                {card.description && (
+                  <p className="mt-1 text-xs font-medium text-gray-500">{card.description}</p>
+                )}
               </div>
             ))}
       </div>

@@ -75,11 +75,15 @@ export interface VeiaMonthlyPoint {
   vendasBrutas1: number;
   vendasBrutas2: number;
   conta1: number;
+  countC1: number;
   conta2: number;
+  countC2: number;
   reembolsoC1: number;
   reembolsoC2: number;
   custoDevC1: number;
   custoDevC2: number;
+  percentC1: string | null;
+  percentC2: string | null;
 }
 
 export interface VeiaMensalResponse {
@@ -270,16 +274,28 @@ function normalizeVeiaMonthlyRow(row: any): VeiaMonthlyPoint {
   if (!mesAno) {
     throw new Error('Linha VEIA sem campo mesAno');
   }
+  const normalizePercent = (value: any): string | null => {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const str = String(value).trim();
+    return str.length ? str : null;
+  };
+
   return {
     mesAno,
     vendasBrutas1: Number(row?.vendasBrutas1) || 0,
     vendasBrutas2: Number(row?.vendasBrutas2) || 0,
     conta1: Number(row?.conta1) || 0,
+    countC1: Number(row?.countC1 ?? row?.conta1) || 0,
     conta2: Number(row?.conta2) || 0,
+    countC2: Number(row?.countC2 ?? row?.conta2) || 0,
     reembolsoC1: Number(row?.reembolsoC1) || 0,
     reembolsoC2: Number(row?.reembolsoC2) || 0,
     custoDevC1: Number(row?.custoDevC1) || 0,
     custoDevC2: Number(row?.custoDevC2) || 0,
+    percentC1: normalizePercent(row?.percentC1 ?? row?.pctC1),
+    percentC2: normalizePercent(row?.percentC2 ?? row?.pctC2),
   };
 }
 

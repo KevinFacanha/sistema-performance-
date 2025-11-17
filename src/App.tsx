@@ -496,12 +496,12 @@ function App({ onLogout }: AppProps = {}) {
   const getCurvaAbcTextClass = (item: CurvaAbcMudanca) => {
     const trend = getCurvaAbcTrend(item.anterior, item.atual);
     if (trend === 'up') {
-      return 'text-green-600';
+      return 'bg-green-200 text-green-900 font-medium rounded-md text-center';
     }
     if (trend === 'down') {
-      return 'text-red-600';
+      return 'bg-red-200 text-red-900 font-medium rounded-md text-center';
     }
-    return 'text-emerald-700';
+    return 'text-emerald-700 font-semibold';
   };
 
   const handleReset = () => {
@@ -970,7 +970,7 @@ function App({ onLogout }: AppProps = {}) {
                                       <tr key={`${item.codigo}-${item.periodo_atual}-${item.atual}`}>
                                         <td className="px-4 py-3 font-semibold text-slate-900">{item.codigo || '—'}</td>
                                         <td className="px-4 py-3">{item.anterior || '—'}</td>
-                                        <td className={`px-4 py-3 font-semibold ${getCurvaAbcTextClass(item)}`}>
+                                        <td className={`px-4 py-3 ${getCurvaAbcTextClass(item)}`}>
                                           {item.atual || '—'}
                                         </td>
                                         <td className="px-4 py-3">{item.periodo_atual || '—'}</td>
