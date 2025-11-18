@@ -438,7 +438,10 @@ export async function getVeiaPeriodos(): Promise<VeiaPeriodOption[]> {
   const rawPeriodos = Array.isArray(data?.periodos) ? data.periodos : [];
   return rawPeriodos
     .map(normalizeVeiaPeriodOption)
-    .filter((option): option is VeiaPeriodOption => Boolean(option && option.value));
+    .filter(
+      (option: VeiaPeriodOption | null | undefined): option is VeiaPeriodOption =>
+        Boolean(option && option.value)
+    );
 }
 
 export async function getComparativoSummary(
