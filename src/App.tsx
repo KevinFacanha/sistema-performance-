@@ -53,6 +53,7 @@ const initialSummary: DashboardSummary = {
 };
 
 const ACCOUNT_STORAGE_KEY = 'account';
+const CURVA_ABC_ACK_KEY = 'curvaABC_ack';
 
 const ACCOUNT_OPTIONS = [
   { value: '1', label: 'CONTA 1' },
@@ -99,6 +100,15 @@ const getCurvaAbcTrend = (anterior: string | null, atual: string | null): CurvaA
     return 'down';
   }
   return 'equal';
+};
+
+const buildCurvaAbcAckKey = (item: Pick<CurvaAbcMudanca, 'codigo' | 'periodo_atual'>): string | null => {
+  const codigo = (item?.codigo || '').trim();
+  const periodoAtual = (item?.periodo_atual || '').trim();
+  if (!codigo || !periodoAtual) {
+    return null;
+  }
+  return `${codigo}_${periodoAtual}`;
 };
 
 function aggregateByDate(rows: DashboardRow[]): DashboardRow[] {
@@ -236,6 +246,24 @@ function App({ onLogout }: AppProps = {}) {
   const [curvaAbcUpdatedAt, setCurvaAbcUpdatedAt] = useState<Date | null>(null);
   const [curvaAbcDismissedMap, setCurvaAbcDismissedMap] = useState<Record<string, boolean>>({});
   const [curvaAbcFilter, setCurvaAbcFilter] = useState<CurvaAbcFilter>('all');
+  const [curvaAbcAcknowledged, setCurvaAbcAcknowledged] = useState<string[]>(() => {
+    if (typeof window === 'undefined') {
+      return [];
+    }
+    try {
+      const stored = localStorage.getItem(CURVA_ABC_ACK_KEY);
+      if (!stored) {
+        return [];
+      }
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed.filter((value): value is string => typeof value === 'string');
+    } catch {
+      return [];
+    }
+  });
 
   const loadCurvaAbcChanges = useCallback(
     async (contaOverride?: '1' | '2') => {
@@ -335,6 +363,17 @@ function App({ onLogout }: AppProps = {}) {
     }
   }, [account]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      localStorage.setItem(CURVA_ABC_ACK_KEY, JSON.stringify(curvaAbcAcknowledged));
+    } catch {
+      // ignore persistence errors
+    }
+  }, [curvaAbcAcknowledged]);
+
   const aggregatedData = useMemo(() => aggregateByDate(detalhado), [detalhado]);
 
   const uniqueMarketplaces = useMemo(() => {
@@ -346,6 +385,20 @@ function App({ onLogout }: AppProps = {}) {
     });
     return Array.from(values).sort((a, b) => a.localeCompare(b));
   }, [detalhado]);
+
+  const curvaAbcVisibleChanges = useMemo(() => {
+    if (!curvaAbcChanges.length) {
+      return [];
+    }
+    const acknowledgedSet = new Set(curvaAbcAcknowledged);
+    return curvaAbcChanges.filter((item) => {
+      const key = buildCurvaAbcAckKey(item);
+      if (!key) {
+        return true;
+      }
+      return !acknowledgedSet.has(key);
+    });
+  }, [curvaAbcChanges, curvaAbcAcknowledged]);
 
   useEffect(() => {
     if (!toast) return;
@@ -364,10 +417,10 @@ function App({ onLogout }: AppProps = {}) {
   }, [view, account, curvaAbcUpdatedAt, curvaAbcLoading, loadCurvaAbcChanges]);
 
   useEffect(() => {
-    if (curvaAbcChanges.length === 0 && curvaAbcExpanded) {
+    if (curvaAbcVisibleChanges.length === 0 && curvaAbcExpanded) {
       setCurvaAbcExpanded(false);
     }
-  }, [curvaAbcChanges.length, curvaAbcExpanded]);
+  }, [curvaAbcVisibleChanges.length, curvaAbcExpanded]);
 
   const buildDashboardPdfFileName = useCallback(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -481,18 +534,18 @@ function App({ onLogout }: AppProps = {}) {
   const refreshDisabled =
     isGeneratingPdf || (isDashboardView ? loading : !canRefreshCompare);
   const refreshSpinning = isDashboardView ? loading : !canRefreshCompare && view === 'compare';
-  const curvaAbcHasChanges = curvaAbcChanges.length > 0;
+  const curvaAbcHasChanges = curvaAbcVisibleChanges.length > 0;
   const curvaAbcUpdatedLabel = curvaAbcUpdatedAt ? curvaAbcUpdatedAt.toLocaleString('pt-BR') : null;
   const curvaAbcDismissed = Boolean(curvaAbcDismissedMap[curvaAbcConta]);
   const filteredCurvaAbcChanges = useMemo(() => {
     if (curvaAbcFilter === 'all') {
-      return curvaAbcChanges;
+      return curvaAbcVisibleChanges;
     }
-    return curvaAbcChanges.filter((item) => {
+    return curvaAbcVisibleChanges.filter((item) => {
       const trend = getCurvaAbcTrend(item.anterior, item.atual);
       return curvaAbcFilter === 'up' ? trend === 'up' : trend === 'down';
     });
-  }, [curvaAbcChanges, curvaAbcFilter]);
+  }, [curvaAbcVisibleChanges, curvaAbcFilter]);
   const getCurvaAbcTextClass = (item: CurvaAbcMudanca) => {
     const trend = getCurvaAbcTrend(item.anterior, item.atual);
     if (trend === 'up') {
@@ -536,6 +589,19 @@ function App({ onLogout }: AppProps = {}) {
     setSelectedMarketplace(value);
     setMarketplace(value ? value.toLowerCase() : undefined);
     setPage(1);
+  };
+
+  const handleCurvaAbcRowAcknowledge = (item: CurvaAbcMudanca) => {
+    const ackKey = buildCurvaAbcAckKey(item);
+    if (!ackKey) {
+      return;
+    }
+    setCurvaAbcAcknowledged((prev) => {
+      if (prev.includes(ackKey)) {
+        return prev;
+      }
+      return [...prev, ackKey];
+    });
   };
 
   const handleCurvaAbcAcknowledge = () => {
@@ -907,9 +973,9 @@ function App({ onLogout }: AppProps = {}) {
                                   Curva ABC – Alterações Detectadas
                                 </p>
                                 <p className="text-base text-slate-600">
-                                  {curvaAbcChanges.length === 1
+                                  {curvaAbcVisibleChanges.length === 1
                                     ? '1 mudança identificada'
-                                    : `${curvaAbcChanges.length} mudanças identificadas`}
+                                    : `${curvaAbcVisibleChanges.length} mudanças identificadas`}
                                 </p>
                               </div>
                             </div>
@@ -963,20 +1029,35 @@ function App({ onLogout }: AppProps = {}) {
                                       <th className="px-4 py-3 text-left">Curva Atual</th>
                                       <th className="px-4 py-3 text-left">Período Atual</th>
                                       <th className="px-4 py-3 text-left">Marketplace</th>
+                                      <th className="px-4 py-3 text-left">Ações</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
-                                    {filteredCurvaAbcChanges.map((item) => (
-                                      <tr key={`${item.codigo}-${item.periodo_atual}-${item.atual}`}>
-                                        <td className="px-4 py-3 font-semibold text-slate-900">{item.codigo || '—'}</td>
-                                        <td className="px-4 py-3">{item.anterior || '—'}</td>
-                                        <td className={`px-4 py-3 ${getCurvaAbcTextClass(item)}`}>
-                                          {item.atual || '—'}
-                                        </td>
-                                        <td className="px-4 py-3">{item.periodo_atual || '—'}</td>
-                                        <td className="px-4 py-3">{item.marketplace || '—'}</td>
-                                      </tr>
-                                    ))}
+                                    {filteredCurvaAbcChanges.map((item) => {
+                                      const rowKey =
+                                        buildCurvaAbcAckKey(item) ??
+                                        `${item.codigo}-${item.periodo_atual}-${item.atual}`;
+                                      return (
+                                        <tr key={rowKey}>
+                                          <td className="px-4 py-3 font-semibold text-slate-900">{item.codigo || '—'}</td>
+                                          <td className="px-4 py-3">{item.anterior || '—'}</td>
+                                          <td className={`px-4 py-3 ${getCurvaAbcTextClass(item)}`}>
+                                            {item.atual || '—'}
+                                          </td>
+                                          <td className="px-4 py-3">{item.periodo_atual || '—'}</td>
+                                          <td className="px-4 py-3">{item.marketplace || '—'}</td>
+                                          <td className="px-4 py-3">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleCurvaAbcRowAcknowledge(item)}
+                                              className="px-2 py-1 text-xs rounded bg-green-100 hover:bg-green-200 text-green-700 border border-green-300"
+                                            >
+                                              Estou ciente
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
                                   </tbody>
                                 </table>
                               </div>
