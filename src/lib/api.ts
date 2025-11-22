@@ -472,3 +472,35 @@ export async function getCurvaAbcMudancas(conta = 1): Promise<CurvaAbcMudanca[]>
   const raw = Array.isArray(data?.mudancas) ? data.mudancas : [];
   return raw.map(normalizeCurvaAbcMudanca);
 }
+
+interface CurvaAbcAckPayload {
+  conta: '1' | '2';
+  codigo: string;
+  periodoAtual: string;
+}
+
+export async function acknowledgeCurvaAbcChange({
+  conta,
+  codigo,
+  periodoAtual,
+}: CurvaAbcAckPayload): Promise<void> {
+  const response = await fetch('/api/curvaabc/ack', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      conta,
+      codigo,
+      codigoAnuncio: codigo,
+      periodoAtual,
+    }),
+  });
+  let payload: any = {};
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {};
+  }
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || 'Falha ao confirmar item da Curva ABC');
+  }
+}

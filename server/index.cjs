@@ -3,6 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const { google } = require("googleapis");
 const path = require("path");
+const fs = require("fs");
+const fsPromises = require("fs/promises");
 
 const app = express();
 const distDir = path.resolve(__dirname, "..", "dist");
@@ -136,12 +138,115 @@ const sheetTitleCache = new Map();
 const veiaDataCache = new Map();
 const curvaABCCache = new Map();
 
+const CURVA_ABC_ACK_FILE = path.join(__dirname, 'curvaabc-ack.json');
+let curvaAbcAckStore = loadCurvaAbcAckStore();
+
 const CURVA_ABC_HEADERS = {
   codigoAnuncio: 'CODIGO ANUNCIO',
   curva: 'CURVA',
   periodo: 'PERIODO',
   marketplace: 'MARKETPLACE',
 };
+
+function loadCurvaAbcAckStore() {
+  try {
+    if (!fs.existsSync(CURVA_ABC_ACK_FILE)) {
+      return {};
+    }
+    const contents = fs.readFileSync(CURVA_ABC_ACK_FILE, 'utf8');
+    const parsed = JSON.parse(contents);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error('Failed to load Curva ABC acknowledgments:', error);
+    }
+  }
+  return {};
+}
+
+async function persistCurvaAbcAckStore() {
+  try {
+    const payload = JSON.stringify(curvaAbcAckStore, null, 2);
+    await fsPromises.writeFile(CURVA_ABC_ACK_FILE, payload, 'utf8');
+  } catch (error) {
+    console.error('Failed to persist Curva ABC acknowledgments:', error);
+    throw error;
+  }
+}
+
+function getCurvaAbcAckBucket(conta) {
+  const key = String(conta);
+  if (!curvaAbcAckStore[key] || typeof curvaAbcAckStore[key] !== 'object') {
+    curvaAbcAckStore[key] = {};
+  }
+  return curvaAbcAckStore[key];
+}
+
+function buildCurvaAbcAckKey(codigo, periodo) {
+  const normalizedCodigo = (codigo || '').toString().trim().toUpperCase();
+  const normalizedPeriodo = (periodo || '').toString().trim();
+  if (!normalizedCodigo || !normalizedPeriodo) {
+    return null;
+  }
+  return `${normalizedCodigo}_${normalizedPeriodo}`;
+}
+
+function filterCurvaAbcRowsByAck(conta, rows = []) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [];
+  }
+  const bucket = getCurvaAbcAckBucket(conta);
+  if (!bucket || !Object.keys(bucket).length) {
+    return rows;
+  }
+  return rows.filter((row) => {
+    const key = buildCurvaAbcAckKey(
+      row?.codigoAnuncio || row?.codigo,
+      row?.periodo_atual || row?.periodoAtual || row?.periodo
+    );
+    if (!key) {
+      return true;
+    }
+    return !bucket[key];
+  });
+}
+
+function filterCurvaAbcMudancasByAck(conta, mudancas = []) {
+  if (!Array.isArray(mudancas) || mudancas.length === 0) {
+    return [];
+  }
+  const bucket = getCurvaAbcAckBucket(conta);
+  if (!bucket || !Object.keys(bucket).length) {
+    return mudancas;
+  }
+  return mudancas.filter((item) => {
+    const key = buildCurvaAbcAckKey(
+      item?.codigo || item?.codigoAnuncio,
+      item?.periodo_atual || item?.periodoAtual
+    );
+    if (!key) {
+      return true;
+    }
+    return !bucket[key];
+  });
+}
+
+async function markCurvaAbcAcknowledged(conta, codigo, periodo) {
+  const key = buildCurvaAbcAckKey(codigo, periodo);
+  if (!key) {
+    const error = new Error('Parâmetros inválidos para confirmação da Curva ABC');
+    error.statusCode = 400;
+    throw error;
+  }
+  const bucket = getCurvaAbcAckBucket(conta);
+  if (!bucket[key]) {
+    bucket[key] = new Date().toISOString();
+    await persistCurvaAbcAckStore();
+  }
+  return key;
+}
 const comparativoFilterCache = new Map();
 const VALID_DASHBOARD_ACCOUNTS = new Set(["1", "2"]);
 
@@ -1901,11 +2006,43 @@ app.get("/api/curvaabc", async (req, res) => {
   try {
     const contaParam = parseCurvaAbcContaParam(req?.query?.conta);
     const rows = await getCurvaABCData(contaParam);
-    res.json({ ok: true, rows });
+    const visibleRows = filterCurvaAbcRowsByAck(contaParam, rows);
+    res.json({ ok: true, rows: visibleRows });
   } catch (error) {
     const status = error.statusCode || 500;
     if (status >= 500) {
       console.error('Error loading Curva ABC data:', error);
+    }
+    res.status(status).json({
+      ok: false,
+      error: error.message || 'Internal server error',
+      code: error.code,
+    });
+  }
+});
+
+app.post("/api/curvaabc/ack", async (req, res) => {
+  try {
+    const contaParam = parseCurvaAbcContaParam(req?.body?.conta || req?.query?.conta);
+    const codigoRaw = req?.body?.codigoAnuncio ?? req?.body?.codigo ?? req?.body?.codigo_anuncio;
+    const periodoRaw = req?.body?.periodoAtual ?? req?.body?.periodo_atual ?? req?.body?.periodo;
+    const codigo = (codigoRaw || '').toString().trim();
+    const periodoNormalized =
+      normalizeCurvaPeriodo(periodoRaw) || (typeof periodoRaw === 'string' ? periodoRaw.trim() : '');
+
+    if (!codigo || !periodoNormalized) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Parâmetros obrigatórios ausentes para confirmação da Curva ABC',
+      });
+    }
+
+    await markCurvaAbcAcknowledged(contaParam, codigo, periodoNormalized);
+    res.json({ ok: true });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    if (status >= 500) {
+      console.error('Error acknowledging Curva ABC item:', error);
     }
     res.status(status).json({
       ok: false,
@@ -1920,7 +2057,8 @@ app.get("/api/curvaabc/check", async (req, res) => {
     const contaParam = parseCurvaAbcContaParam(req?.query?.conta);
     const rows = await getCurvaABCData(contaParam);
     const mudancas = buildCurvaABCMudancas(rows);
-    res.json({ ok: true, mudancas });
+    const visibleMudancas = filterCurvaAbcMudancasByAck(contaParam, mudancas);
+    res.json({ ok: true, mudancas: visibleMudancas });
   } catch (error) {
     const status = error.statusCode || 500;
     if (status >= 500) {

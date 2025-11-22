@@ -27,6 +27,7 @@ import {
   DashboardRow,
   DashboardSummary,
   MonthlyPoint,
+  acknowledgeCurvaAbcChange,
   getCurvaAbcMudancas,
   getDetalhado,
   getMonthly,
@@ -53,7 +54,6 @@ const initialSummary: DashboardSummary = {
 };
 
 const ACCOUNT_STORAGE_KEY = 'account';
-const CURVA_ABC_ACK_KEY = 'curvaABC_ack';
 
 const ACCOUNT_OPTIONS = [
   { value: '1', label: 'CONTA 1' },
@@ -101,14 +101,13 @@ const getCurvaAbcTrend = (anterior: string | null, atual: string | null): CurvaA
   }
   return 'equal';
 };
-
-const buildCurvaAbcAckKey = (item: Pick<CurvaAbcMudanca, 'codigo' | 'periodo_atual'>): string | null => {
+const getCurvaAbcRowKey = (item: CurvaAbcMudanca): string => {
   const codigo = (item?.codigo || '').trim();
   const periodoAtual = (item?.periodo_atual || '').trim();
-  if (!codigo || !periodoAtual) {
-    return null;
+  if (codigo && periodoAtual) {
+    return `${codigo}_${periodoAtual}`;
   }
-  return `${codigo}_${periodoAtual}`;
+  return `${codigo || 'item'}_${periodoAtual || 'periodo'}_${item?.atual || 'curva'}`;
 };
 
 function aggregateByDate(rows: DashboardRow[]): DashboardRow[] {
@@ -246,24 +245,7 @@ function App({ onLogout }: AppProps = {}) {
   const [curvaAbcUpdatedAt, setCurvaAbcUpdatedAt] = useState<Date | null>(null);
   const [curvaAbcDismissedMap, setCurvaAbcDismissedMap] = useState<Record<string, boolean>>({});
   const [curvaAbcFilter, setCurvaAbcFilter] = useState<CurvaAbcFilter>('all');
-  const [curvaAbcAcknowledged, setCurvaAbcAcknowledged] = useState<string[]>(() => {
-    if (typeof window === 'undefined') {
-      return [];
-    }
-    try {
-      const stored = localStorage.getItem(CURVA_ABC_ACK_KEY);
-      if (!stored) {
-        return [];
-      }
-      const parsed = JSON.parse(stored);
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-      return parsed.filter((value): value is string => typeof value === 'string');
-    } catch {
-      return [];
-    }
-  });
+  const [curvaAbcAckPending, setCurvaAbcAckPending] = useState<Record<string, boolean>>({});
 
   const loadCurvaAbcChanges = useCallback(
     async (contaOverride?: '1' | '2') => {
@@ -363,17 +345,6 @@ function App({ onLogout }: AppProps = {}) {
     }
   }, [account]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    try {
-      localStorage.setItem(CURVA_ABC_ACK_KEY, JSON.stringify(curvaAbcAcknowledged));
-    } catch {
-      // ignore persistence errors
-    }
-  }, [curvaAbcAcknowledged]);
-
   const aggregatedData = useMemo(() => aggregateByDate(detalhado), [detalhado]);
 
   const uniqueMarketplaces = useMemo(() => {
@@ -385,20 +356,6 @@ function App({ onLogout }: AppProps = {}) {
     });
     return Array.from(values).sort((a, b) => a.localeCompare(b));
   }, [detalhado]);
-
-  const curvaAbcVisibleChanges = useMemo(() => {
-    if (!curvaAbcChanges.length) {
-      return [];
-    }
-    const acknowledgedSet = new Set(curvaAbcAcknowledged);
-    return curvaAbcChanges.filter((item) => {
-      const key = buildCurvaAbcAckKey(item);
-      if (!key) {
-        return true;
-      }
-      return !acknowledgedSet.has(key);
-    });
-  }, [curvaAbcChanges, curvaAbcAcknowledged]);
 
   useEffect(() => {
     if (!toast) return;
@@ -417,10 +374,10 @@ function App({ onLogout }: AppProps = {}) {
   }, [view, account, curvaAbcUpdatedAt, curvaAbcLoading, loadCurvaAbcChanges]);
 
   useEffect(() => {
-    if (curvaAbcVisibleChanges.length === 0 && curvaAbcExpanded) {
+    if (curvaAbcChanges.length === 0 && curvaAbcExpanded) {
       setCurvaAbcExpanded(false);
     }
-  }, [curvaAbcVisibleChanges.length, curvaAbcExpanded]);
+  }, [curvaAbcChanges.length, curvaAbcExpanded]);
 
   const buildDashboardPdfFileName = useCallback(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -534,18 +491,18 @@ function App({ onLogout }: AppProps = {}) {
   const refreshDisabled =
     isGeneratingPdf || (isDashboardView ? loading : !canRefreshCompare);
   const refreshSpinning = isDashboardView ? loading : !canRefreshCompare && view === 'compare';
-  const curvaAbcHasChanges = curvaAbcVisibleChanges.length > 0;
+  const curvaAbcHasChanges = curvaAbcChanges.length > 0;
   const curvaAbcUpdatedLabel = curvaAbcUpdatedAt ? curvaAbcUpdatedAt.toLocaleString('pt-BR') : null;
   const curvaAbcDismissed = Boolean(curvaAbcDismissedMap[curvaAbcConta]);
   const filteredCurvaAbcChanges = useMemo(() => {
     if (curvaAbcFilter === 'all') {
-      return curvaAbcVisibleChanges;
+      return curvaAbcChanges;
     }
-    return curvaAbcVisibleChanges.filter((item) => {
+    return curvaAbcChanges.filter((item) => {
       const trend = getCurvaAbcTrend(item.anterior, item.atual);
       return curvaAbcFilter === 'up' ? trend === 'up' : trend === 'down';
     });
-  }, [curvaAbcVisibleChanges, curvaAbcFilter]);
+  }, [curvaAbcChanges, curvaAbcFilter]);
   const getCurvaAbcTextClass = (item: CurvaAbcMudanca) => {
     const trend = getCurvaAbcTrend(item.anterior, item.atual);
     if (trend === 'up') {
@@ -591,17 +548,33 @@ function App({ onLogout }: AppProps = {}) {
     setPage(1);
   };
 
-  const handleCurvaAbcRowAcknowledge = (item: CurvaAbcMudanca) => {
-    const ackKey = buildCurvaAbcAckKey(item);
-    if (!ackKey) {
+  const handleCurvaAbcRowAcknowledge = async (item: CurvaAbcMudanca) => {
+    const codigo = (item.codigo || '').trim();
+    const periodoAtual = (item.periodo_atual || '').trim();
+    if (!codigo || !periodoAtual) {
+      setToast({ type: 'error', message: 'Não foi possível confirmar este item da Curva ABC.' });
       return;
     }
-    setCurvaAbcAcknowledged((prev) => {
-      if (prev.includes(ackKey)) {
-        return prev;
-      }
-      return [...prev, ackKey];
-    });
+    const rowKey = `${codigo}_${periodoAtual}`;
+    if (curvaAbcAckPending[rowKey]) {
+      return;
+    }
+    setCurvaAbcAckPending((prev) => ({ ...prev, [rowKey]: true }));
+    try {
+      await acknowledgeCurvaAbcChange({ conta: curvaAbcConta, codigo, periodoAtual });
+      setCurvaAbcChanges((prev) =>
+        prev.filter((change) => !(change.codigo === codigo && change.periodo_atual === periodoAtual))
+      );
+    } catch (error) {
+      console.error('Erro ao confirmar mudança da Curva ABC:', error);
+      setToast({ type: 'error', message: 'Falha ao registrar confirmação da Curva ABC. Tente novamente.' });
+    } finally {
+      setCurvaAbcAckPending((prev) => {
+        const next = { ...prev };
+        delete next[rowKey];
+        return next;
+      });
+    }
   };
 
   const handleCurvaAbcAcknowledge = () => {
@@ -973,9 +946,9 @@ function App({ onLogout }: AppProps = {}) {
                                   Curva ABC – Alterações Detectadas
                                 </p>
                                 <p className="text-base text-slate-600">
-                                  {curvaAbcVisibleChanges.length === 1
+                                  {curvaAbcChanges.length === 1
                                     ? '1 mudança identificada'
-                                    : `${curvaAbcVisibleChanges.length} mudanças identificadas`}
+                                    : `${curvaAbcChanges.length} mudanças identificadas`}
                                 </p>
                               </div>
                             </div>
@@ -1034,9 +1007,8 @@ function App({ onLogout }: AppProps = {}) {
                                   </thead>
                                   <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
                                     {filteredCurvaAbcChanges.map((item) => {
-                                      const rowKey =
-                                        buildCurvaAbcAckKey(item) ??
-                                        `${item.codigo}-${item.periodo_atual}-${item.atual}`;
+                                      const rowKey = getCurvaAbcRowKey(item);
+                                      const isAcknowledging = Boolean(curvaAbcAckPending[rowKey]);
                                       return (
                                         <tr key={rowKey}>
                                           <td className="px-4 py-3 font-semibold text-slate-900">{item.codigo || '—'}</td>
@@ -1050,7 +1022,8 @@ function App({ onLogout }: AppProps = {}) {
                                             <button
                                               type="button"
                                               onClick={() => handleCurvaAbcRowAcknowledge(item)}
-                                              className="px-2 py-1 text-xs rounded bg-green-100 hover:bg-green-200 text-green-700 border border-green-300"
+                                              disabled={isAcknowledging}
+                                              className="px-2 py-1 text-xs rounded bg-green-100 hover:bg-green-200 text-green-700 border border-green-300 disabled:opacity-60 disabled:cursor-not-allowed"
                                             >
                                               Estou ciente
                                             </button>
