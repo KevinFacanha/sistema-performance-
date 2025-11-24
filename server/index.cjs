@@ -1136,6 +1136,25 @@ function filterVeiaRows(rows = [], filters = {}) {
   });
 }
 
+function dedupeVeiaRowsByMonthAndModalidade(rows = []) {
+  const seen = new Set();
+  const deduped = [];
+  rows.forEach((row) => {
+    const mesAno = row?.mesAno;
+    if (!mesAno) {
+      return;
+    }
+    const modalidadeKey = normalizeVeiaText(row?.modalidade) || "";
+    const key = `${mesAno}__${modalidadeKey}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    deduped.push(row);
+  });
+  return deduped;
+}
+
 function buildVeiaSummary(rows = []) {
   const monthSet = new Set();
   const totals = {
@@ -1153,14 +1172,18 @@ function buildVeiaSummary(rows = []) {
     if (row.mesAno) {
       monthSet.add(row.mesAno);
     }
-    totals.vendasBrutas1Total += row.vendasBrutas1 ?? 0;
-    totals.vendasBrutas2Total += row.vendasBrutas2 ?? 0;
     totals.conta1Total += row.conta1 ?? 0;
     totals.conta2Total += row.conta2 ?? 0;
     totals.reembolsoC1Total += row.reembolsoC1 ?? 0;
     totals.reembolsoC2Total += row.reembolsoC2 ?? 0;
     totals.custoDevC1Total += row.custoDevC1 ?? 0;
     totals.custoDevC2Total += row.custoDevC2 ?? 0;
+  });
+
+  const dedupedRows = dedupeVeiaRowsByMonthAndModalidade(rows);
+  dedupedRows.forEach((row) => {
+    totals.vendasBrutas1Total += row.vendasBrutas1 ?? 0;
+    totals.vendasBrutas2Total += row.vendasBrutas2 ?? 0;
   });
 
   return {
@@ -1177,7 +1200,6 @@ function buildVeiaSummary(rows = []) {
 }
 
 function buildVeiaMonthly(rows = []) {
-  const monthlyMap = new Map();
   const modalidades = new Set();
   const statusSet = new Set();
 
@@ -1188,11 +1210,13 @@ function buildVeiaMonthly(rows = []) {
     if (row.status) {
       statusSet.add(String(row.status));
     }
+  });
 
-    if (!row.mesAno) return;
-    if (!monthlyMap.has(row.mesAno)) {
-      monthlyMap.set(row.mesAno, {
-        mesAno: row.mesAno,
+  const monthlyMap = new Map();
+  const ensureBucket = (mesAno) => {
+    if (!monthlyMap.has(mesAno)) {
+      monthlyMap.set(mesAno, {
+        mesAno,
         vendasBrutas1: 0,
         vendasBrutas2: 0,
         conta1: 0,
@@ -1207,9 +1231,12 @@ function buildVeiaMonthly(rows = []) {
         percentC2: null,
       });
     }
-    const bucket = monthlyMap.get(row.mesAno);
-    bucket.vendasBrutas1 += row.vendasBrutas1 ?? 0;
-    bucket.vendasBrutas2 += row.vendasBrutas2 ?? 0;
+    return monthlyMap.get(mesAno);
+  };
+
+  rows.forEach((row) => {
+    if (!row.mesAno) return;
+    const bucket = ensureBucket(row.mesAno);
     bucket.conta1 += row.conta1 ?? 0;
     bucket.conta2 += row.conta2 ?? 0;
     bucket.countC1 += row.countC1 ?? row.conta1 ?? 0;
@@ -1230,6 +1257,14 @@ function buildVeiaMonthly(rows = []) {
         bucket.percentC2 = pct2;
       }
     }
+  });
+
+  const dedupedRows = dedupeVeiaRowsByMonthAndModalidade(rows);
+  dedupedRows.forEach((row) => {
+    if (!row.mesAno) return;
+    const bucket = ensureBucket(row.mesAno);
+    bucket.vendasBrutas1 += row.vendasBrutas1 ?? 0;
+    bucket.vendasBrutas2 += row.vendasBrutas2 ?? 0;
   });
 
   const meses = Array.from(monthlyMap.values())
