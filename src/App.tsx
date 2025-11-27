@@ -104,10 +104,11 @@ const getCurvaAbcTrend = (anterior: string | null, atual: string | null): CurvaA
 const getCurvaAbcRowKey = (item: CurvaAbcMudanca): string => {
   const codigo = (item?.codigo || '').trim();
   const periodoAtual = (item?.periodo_atual || '').trim();
+  const marketplace = (item?.marketplace || '').trim() || 'global';
   if (codigo && periodoAtual) {
-    return `${codigo}_${periodoAtual}`;
+    return `${codigo}_${periodoAtual}_${marketplace}`;
   }
-  return `${codigo || 'item'}_${periodoAtual || 'periodo'}_${item?.atual || 'curva'}`;
+  return `${codigo || 'item'}_${periodoAtual || 'periodo'}_${item?.atual || 'curva'}_${marketplace}`;
 };
 
 function aggregateByDate(rows: DashboardRow[]): DashboardRow[] {
@@ -551,19 +552,31 @@ function App({ onLogout }: AppProps = {}) {
   const handleCurvaAbcRowAcknowledge = async (item: CurvaAbcMudanca) => {
     const codigo = (item.codigo || '').trim();
     const periodoAtual = (item.periodo_atual || '').trim();
+    const marketplace = (item.marketplace || '').trim();
     if (!codigo || !periodoAtual) {
       setToast({ type: 'error', message: 'Não foi possível confirmar este item da Curva ABC.' });
       return;
     }
-    const rowKey = `${codigo}_${periodoAtual}`;
+    const rowKey = getCurvaAbcRowKey(item);
     if (curvaAbcAckPending[rowKey]) {
       return;
     }
     setCurvaAbcAckPending((prev) => ({ ...prev, [rowKey]: true }));
     try {
-      await acknowledgeCurvaAbcChange({ conta: curvaAbcConta, codigo, periodoAtual });
+      await acknowledgeCurvaAbcChange({
+        conta: curvaAbcConta,
+        codigo,
+        periodoAtual,
+        curva: item.atual || null,
+        marketplace: marketplace || null,
+      });
       setCurvaAbcChanges((prev) =>
-        prev.filter((change) => !(change.codigo === codigo && change.periodo_atual === periodoAtual))
+        prev.filter((change) => {
+          const sameCodigo = change.codigo === codigo;
+          const samePeriodo = change.periodo_atual === periodoAtual;
+          const sameMarketplace = (change.marketplace || '').trim() === marketplace;
+          return !(sameCodigo && samePeriodo && sameMarketplace);
+        })
       );
     } catch (error) {
       console.error('Erro ao confirmar mudança da Curva ABC:', error);
@@ -577,7 +590,11 @@ function App({ onLogout }: AppProps = {}) {
     }
   };
 
-  const handleCurvaAbcAcknowledge = () => {
+  const handleCurvaAbcAcknowledge = async () => {
+    if (curvaAbcChanges.length) {
+      const pendingItems = [...curvaAbcChanges];
+      await Promise.all(pendingItems.map((item) => handleCurvaAbcRowAcknowledge(item)));
+    }
     setCurvaAbcDismissedMap((prev) => ({ ...prev, [curvaAbcConta]: true }));
     setCurvaAbcExpanded(false);
   };

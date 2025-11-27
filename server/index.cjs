@@ -3,8 +3,6 @@ const express = require("express");
 const cors = require("cors");
 const { google } = require("googleapis");
 const path = require("path");
-const fs = require("fs");
-const fsPromises = require("fs/promises");
 
 const app = express();
 const distDir = path.resolve(__dirname, "..", "dist");
@@ -129,7 +127,7 @@ function parseDateToISO(value) {
   return null;
 }
 
-const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
+const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 let authClient = null;
 let cachedAuthSignature = null;
 const SHEET_CACHE_TTL = 60 * 1000; // 1 minute cache to avoid excessive Google Sheets calls
@@ -137,9 +135,16 @@ const tabDataCache = new Map();
 const sheetTitleCache = new Map();
 const veiaDataCache = new Map();
 const curvaABCCache = new Map();
+const curvaAbcAckCache = new Map();
 
-const CURVA_ABC_ACK_FILE = path.join(__dirname, 'curvaabc-ack.json');
-let curvaAbcAckStore = loadCurvaAbcAckStore();
+const CURVA_ABC_ACK_TAB_NAME = 'curvaabc_ack';
+const CURVA_ABC_ACK_HEADERS = {
+  codigo: 'CODIGO_ANUNCIO',
+  curva: 'CURVA',
+  periodo: 'PERIODO',
+  marketplace: 'MARKETPLACE',
+  dataAck: 'DATA_ACK',
+};
 
 const CURVA_ABC_HEADERS = {
   codigoAnuncio: 'CODIGO ANUNCIO',
@@ -148,103 +153,193 @@ const CURVA_ABC_HEADERS = {
   marketplace: 'MARKETPLACE',
 };
 
-function loadCurvaAbcAckStore() {
-  try {
-    if (!fs.existsSync(CURVA_ABC_ACK_FILE)) {
-      return {};
-    }
-    const contents = fs.readFileSync(CURVA_ABC_ACK_FILE, 'utf8');
-    const parsed = JSON.parse(contents);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed;
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('Failed to load Curva ABC acknowledgments:', error);
-    }
+function getCurvaAbcAckCacheEntry(cacheKey) {
+  if (!curvaAbcAckCache.has(cacheKey)) {
+    curvaAbcAckCache.set(cacheKey, {
+      keys: null,
+      expiresAt: 0,
+      promise: null,
+    });
   }
-  return {};
+  return curvaAbcAckCache.get(cacheKey);
 }
 
-async function persistCurvaAbcAckStore() {
-  try {
-    const payload = JSON.stringify(curvaAbcAckStore, null, 2);
-    await fsPromises.writeFile(CURVA_ABC_ACK_FILE, payload, 'utf8');
-  } catch (error) {
-    console.error('Failed to persist Curva ABC acknowledgments:', error);
-    throw error;
+function normalizeCurvaAbcAckPeriodo(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
   }
+  if (value === undefined || value === null) {
+    return '';
+  }
+  const stringValue = String(value).trim();
+  if (!stringValue) {
+    return '';
+  }
+  const iso = normalizeCurvaPeriodo(stringValue);
+  return iso || stringValue;
 }
 
-function getCurvaAbcAckBucket(conta) {
-  const key = String(conta);
-  if (!curvaAbcAckStore[key] || typeof curvaAbcAckStore[key] !== 'object') {
-    curvaAbcAckStore[key] = {};
-  }
-  return curvaAbcAckStore[key];
-}
-
-function buildCurvaAbcAckKey(codigo, periodo) {
+function buildCurvaAbcAckKey(codigo, periodo, marketplace) {
   const normalizedCodigo = (codigo || '').toString().trim().toUpperCase();
-  const normalizedPeriodo = (periodo || '').toString().trim();
+  const normalizedPeriodo = normalizeCurvaAbcAckPeriodo(periodo);
+  const normalizedMarketplace = (marketplace || '').toString().trim().toUpperCase() || 'GLOBAL';
   if (!normalizedCodigo || !normalizedPeriodo) {
     return null;
   }
-  return `${normalizedCodigo}_${normalizedPeriodo}`;
+  return `${normalizedCodigo}__${normalizedPeriodo}__${normalizedMarketplace}`;
 }
 
-function filterCurvaAbcRowsByAck(conta, rows = []) {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return [];
-  }
-  const bucket = getCurvaAbcAckBucket(conta);
-  if (!bucket || !Object.keys(bucket).length) {
+function filterCurvaAbcRowsByAck(rows = [], ackSet = new Set()) {
+  if (!Array.isArray(rows) || rows.length === 0 || !ackSet.size) {
     return rows;
   }
   return rows.filter((row) => {
     const key = buildCurvaAbcAckKey(
       row?.codigoAnuncio || row?.codigo,
-      row?.periodo_atual || row?.periodoAtual || row?.periodo
+      row?.periodo_atual || row?.periodoAtual || row?.periodo,
+      row?.marketplace
     );
     if (!key) {
       return true;
     }
-    return !bucket[key];
+    return !ackSet.has(key);
   });
 }
 
-function filterCurvaAbcMudancasByAck(conta, mudancas = []) {
-  if (!Array.isArray(mudancas) || mudancas.length === 0) {
-    return [];
-  }
-  const bucket = getCurvaAbcAckBucket(conta);
-  if (!bucket || !Object.keys(bucket).length) {
+function filterCurvaAbcMudancasByAck(mudancas = [], ackSet = new Set()) {
+  if (!Array.isArray(mudancas) || mudancas.length === 0 || !ackSet.size) {
     return mudancas;
   }
   return mudancas.filter((item) => {
     const key = buildCurvaAbcAckKey(
       item?.codigo || item?.codigoAnuncio,
-      item?.periodo_atual || item?.periodoAtual
+      item?.periodo_atual || item?.periodoAtual,
+      item?.marketplace
     );
     if (!key) {
       return true;
     }
-    return !bucket[key];
+    return !ackSet.has(key);
   });
 }
 
-async function markCurvaAbcAcknowledged(conta, codigo, periodo) {
-  const key = buildCurvaAbcAckKey(codigo, periodo);
+async function getCurvaAbcAckMap(contaParam = '1', force = false) {
+  const conta = parseCurvaAbcContaParam(contaParam);
+  const cacheKey = `curvaabc-ack:${conta}`;
+  const cacheEntry = getCurvaAbcAckCacheEntry(cacheKey);
+  const now = Date.now();
+
+  if (!force && cacheEntry.keys && cacheEntry.expiresAt > now) {
+    return cacheEntry.keys;
+  }
+  if (!force && cacheEntry.promise) {
+    return cacheEntry.promise;
+  }
+
+  const loader = (async () => {
+    const { sheetId } = resolveCurvaAbcSheetId(conta);
+    const ackTabTitle = await resolveSheetTitle(sheetId, CURVA_ABC_ACK_TAB_NAME);
+    const safeTitle = quoteSheetTitle(ackTabTitle);
+    const range = `${safeTitle}!A1:E20000`;
+    const rows = await readRange(sheetId, range);
+    const keys = new Set();
+
+    if (!rows || rows.length < 2) {
+      return keys;
+    }
+
+    const headerRow = rows[0].map((cell) => (cell || '').toString().trim());
+    const codigoIdx = getHeaderIndex(headerRow, CURVA_ABC_ACK_HEADERS.codigo);
+    const periodoIdx = getHeaderIndex(headerRow, CURVA_ABC_ACK_HEADERS.periodo);
+    const marketplaceIdx = getHeaderIndex(headerRow, CURVA_ABC_ACK_HEADERS.marketplace);
+
+    if (codigoIdx === -1 || periodoIdx === -1) {
+      throw new Error('Aba curvaabc_ack não possui todos os cabeçalhos obrigatórios.');
+    }
+
+    rows.slice(1).forEach((row) => {
+      const safeRow = row || [];
+      if (isRowEmpty(safeRow)) {
+        return;
+      }
+      const codigo = safeRow[codigoIdx];
+      const periodo = safeRow[periodoIdx];
+      const marketplace = marketplaceIdx >= 0 ? safeRow[marketplaceIdx] : '';
+      const key = buildCurvaAbcAckKey(codigo, periodo, marketplace);
+      if (key) {
+        keys.add(key);
+      }
+    });
+
+    return keys;
+  })();
+
+  if (force) {
+    return loader;
+  }
+
+  cacheEntry.promise = loader;
+  try {
+    const keys = await cacheEntry.promise;
+    cacheEntry.keys = keys;
+    cacheEntry.expiresAt = Date.now() + SHEET_CACHE_TTL;
+    cacheEntry.promise = null;
+    return keys;
+  } catch (error) {
+    cacheEntry.promise = null;
+    cacheEntry.keys = null;
+    cacheEntry.expiresAt = 0;
+    throw error;
+  }
+}
+
+function formatCurvaAbcAckTimestamp(date = new Date()) {
+  const tzOffset = date.getTimezoneOffset() * 60000;
+  const localISO = new Date(date.getTime() - tzOffset).toISOString();
+  return localISO.replace('T', ' ').slice(0, 19);
+}
+
+async function appendCurvaAbcAckRow(conta, { codigo, curva, periodo, marketplace }) {
+  const { sheetId } = resolveCurvaAbcSheetId(conta);
+  const ackTabTitle = await resolveSheetTitle(sheetId, CURVA_ABC_ACK_TAB_NAME);
+  const auth = getAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const safeRange = `${quoteSheetTitle(ackTabTitle)}!A:E`;
+  const timestamp = formatCurvaAbcAckTimestamp();
+
+  const row = [
+    (codigo || '').toString().trim(),
+    (curva || '').toString().trim(),
+    periodo,
+    (marketplace || '').toString().trim(),
+    timestamp,
+  ];
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range: safeRange,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: {
+      values: [row],
+    },
+  });
+}
+
+async function markCurvaAbcAcknowledged(conta, { codigo, curva, periodo, marketplace }) {
+  const normalizedPeriodo = normalizeCurvaAbcAckPeriodo(periodo);
+  const key = buildCurvaAbcAckKey(codigo, normalizedPeriodo, marketplace);
   if (!key) {
     const error = new Error('Parâmetros inválidos para confirmação da Curva ABC');
     error.statusCode = 400;
     throw error;
   }
-  const bucket = getCurvaAbcAckBucket(conta);
-  if (!bucket[key]) {
-    bucket[key] = new Date().toISOString();
-    await persistCurvaAbcAckStore();
+  const ackSet = await getCurvaAbcAckMap(conta);
+  if (ackSet.has(key)) {
+    return key;
   }
+  await appendCurvaAbcAckRow(conta, { codigo, curva, periodo: normalizedPeriodo, marketplace });
+  ackSet.add(key);
   return key;
 }
 const comparativoFilterCache = new Map();
@@ -2041,7 +2136,8 @@ app.get("/api/curvaabc", async (req, res) => {
   try {
     const contaParam = parseCurvaAbcContaParam(req?.query?.conta);
     const rows = await getCurvaABCData(contaParam);
-    const visibleRows = filterCurvaAbcRowsByAck(contaParam, rows);
+    const ackSet = await getCurvaAbcAckMap(contaParam);
+    const visibleRows = filterCurvaAbcRowsByAck(rows, ackSet);
     res.json({ ok: true, rows: visibleRows });
   } catch (error) {
     const status = error.statusCode || 500;
@@ -2060,19 +2156,24 @@ app.post("/api/curvaabc/ack", async (req, res) => {
   try {
     const contaParam = parseCurvaAbcContaParam(req?.body?.conta || req?.query?.conta);
     const codigoRaw = req?.body?.codigoAnuncio ?? req?.body?.codigo ?? req?.body?.codigo_anuncio;
-    const periodoRaw = req?.body?.periodoAtual ?? req?.body?.periodo_atual ?? req?.body?.periodo;
+    const periodoRaw = req?.body?.periodo ?? req?.body?.periodoAtual ?? req?.body?.periodo_atual;
+    const marketplaceRaw =
+      req?.body?.marketplace ?? req?.body?.marketplace_anuncio ?? req?.body?.marketplaceAtual ?? '';
+    const curvaRaw = req?.body?.curva ?? req?.body?.curvaAtual ?? req?.body?.curva_atual ?? req?.body?.atual;
     const codigo = (codigoRaw || '').toString().trim();
-    const periodoNormalized =
-      normalizeCurvaPeriodo(periodoRaw) || (typeof periodoRaw === 'string' ? periodoRaw.trim() : '');
-
-    if (!codigo || !periodoNormalized) {
+    if (!codigo || !periodoRaw) {
       return res.status(400).json({
         ok: false,
         error: 'Parâmetros obrigatórios ausentes para confirmação da Curva ABC',
       });
     }
 
-    await markCurvaAbcAcknowledged(contaParam, codigo, periodoNormalized);
+    await markCurvaAbcAcknowledged(contaParam, {
+      codigo,
+      curva: curvaRaw,
+      periodo: periodoRaw,
+      marketplace: marketplaceRaw,
+    });
     res.json({ ok: true });
   } catch (error) {
     const status = error.statusCode || 500;
@@ -2092,7 +2193,8 @@ app.get("/api/curvaabc/check", async (req, res) => {
     const contaParam = parseCurvaAbcContaParam(req?.query?.conta);
     const rows = await getCurvaABCData(contaParam);
     const mudancas = buildCurvaABCMudancas(rows);
-    const visibleMudancas = filterCurvaAbcMudancasByAck(contaParam, mudancas);
+    const ackSet = await getCurvaAbcAckMap(contaParam);
+    const visibleMudancas = filterCurvaAbcMudancasByAck(mudancas, ackSet);
     res.json({ ok: true, mudancas: visibleMudancas });
   } catch (error) {
     const status = error.statusCode || 500;

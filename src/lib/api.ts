@@ -477,12 +477,16 @@ interface CurvaAbcAckPayload {
   conta: '1' | '2';
   codigo: string;
   periodoAtual: string;
+  curva: string | null;
+  marketplace: string | null;
 }
 
 export async function acknowledgeCurvaAbcChange({
   conta,
   codigo,
   periodoAtual,
+  curva,
+  marketplace,
 }: CurvaAbcAckPayload): Promise<void> {
   const response = await fetch('/api/curvaabc/ack', {
     method: 'POST',
@@ -491,7 +495,11 @@ export async function acknowledgeCurvaAbcChange({
       conta,
       codigo,
       codigoAnuncio: codigo,
+      periodo: periodoAtual,
       periodoAtual,
+      curva,
+      curvaAtual: curva,
+      marketplace,
     }),
   });
   let payload: any = {};
